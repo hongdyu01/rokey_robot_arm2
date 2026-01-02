@@ -351,6 +351,7 @@ def robot_state_monitor_thread(stop_event, fault_event, sysctl, db_manager: Robo
         time.sleep(0.5)
 
 # [수정] 명령 감시 스레드
+# [수정] 명령 감시 스레드
 def command_watcher_thread(
     run_gate: threading.Event,
     abort_event: threading.Event,
@@ -373,42 +374,47 @@ def command_watcher_thread(
 
                 # 1. Stop / Abort
                 if cmd in ("emergency_stop", "stop", "abort"):
+                    logger.warning("🛑 STOP/ABORT Triggered!")
                     if not fault_event.is_set():
                         motion.move_stop(stop_mode=1)
                     abort_event.set()
                     run_gate.set() 
-                    # [수정] status 제거 -> is_working, current_task 업데이트
                     db_manager.update_robot_state(desired_state="None", is_working=False, current_task="idle")
 
                 # 2. Home
                 elif cmd == "home":
+                    logger.info("🏠 HOME Triggered!")
                     if not fault_event.is_set():
                         motion.move_stop(stop_mode=1)
                     abort_event.set()
                     home_event.set() 
                     run_gate.set()
 
-                # 3. Pause
+                # 3. Pause (조건문 제거 -> 강제 실행)
                 elif cmd == "pause":
+                    # 에러나 홈 복귀 중이 아니라면 무조건 멈춤 시도
                     if not (abort_event.is_set() or fault_event.is_set() or home_event.is_set()):
-                        if not motion.paused:
-                            logger.info("Pause request")
-                            run_gate.clear()
-                            db_manager.update_robot_state(is_working=False, current_task="paused")
+                        logger.info("⏸️ Executing PAUSE Logic (Forced)")
+                        
+                        # [중요] 상태 체크 없이 무조건 닫는다.
+                        run_gate.clear() 
+                        
+                        # DB 업데이트
+                        db_manager.update_robot_state(is_working=False, current_task="paused")
 
-                            if not motion.paused:
-                                motion.move_pause()
+                        # [중요] 하드웨어 멈춤 명령 전송 (이미 멈춰있어도 또 보냄 - 안전 제일)
+                        motion.move_pause()
 
                 # 4. Resume
                 elif cmd == "resume" or cmd == "working":
                     if not (abort_event.is_set() or fault_event.is_set() or home_event.is_set()):
-                        if motion.paused:
-                            if motion.move_resume():
-                                run_gate.set()
-                                # [수정] status -> is_working
-                                db_manager.update_robot_state(is_working=True, current_task="picking")
-                        else:
-                            run_gate.set()
+                        # Resume도 명시적으로 수행
+                        if motion.paused: 
+                            motion.move_resume()
+                        
+                        logger.info("▶️ Resuming Task")
+                        run_gate.set() # 게이트 열기
+                        db_manager.update_robot_state(is_working=True, current_task="picking")
 
             time.sleep(0.5) 
         except Exception as e:
@@ -666,7 +672,7 @@ def perform_task(
     def checkpoint():
         if fault_event.is_set(): raise StopRequested("External Force/Fault Detected")
         if abort_event.is_set(): raise StopRequested("Abort Requested")
-        
+        logger.info("Checking run_gate...")
         # Pause 상태면 여기서 대기
         if not run_gate.is_set():
             logger.info("⏸️ Task Paused. Waiting for Resume...")
