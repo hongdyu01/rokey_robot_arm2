@@ -365,74 +365,87 @@ def robot_state_monitor_thread(stop_event, fault_event, sysctl, db_manager: Robo
         time.sleep(0.5)
 
 # [수정] 명령 감시 스레드
-# [수정] 명령 감시 스레드
+# 파라미터 순서를 main()의 호출 순서와 일치시킴
 def command_watcher_thread(
     run_gate: threading.Event,
     abort_event: threading.Event,
     home_event: threading.Event,
     stop_event: threading.Event,
-    fault_event: threading.Event,
-    motion: MotionController,
-    db_manager: RobotDataManager
+    fault_event: threading.Event,      # [수정] main() 호출 순서에 맞게 5번째로 이동
+    motion: MotionController,          # [수정] main() 호출 순서에 맞게 6번째로 이동
+    db_manager: RobotDataManager,      # [추가] 7번째 파라미터로 추가
 ):
+    """
+    DB의 desired_state를 감시하여 pause/resume/stop/home 명령 처리
+    
+    [핵심 수정 사항]
+    1. 파라미터 순서를 main()의 args 순서와 일치시킴
+       - 기존: ..., motion, fault_event (잘못됨)
+       - 수정: ..., fault_event, motion, db_manager
+    2. 별도 supabase 연결 대신 db_manager 활용
+    3. get_robot_desired_state() 대신 db_manager.get_robot_desired_state() 사용
+    """
     last_cmd = None
 
     while not stop_event.is_set():
         try:
+            # [수정] db_manager의 메서드 사용 (timestamp 불필요)
             cmd = db_manager.get_robot_desired_state()
+            
+            # 명령어가 바뀌었으면 새로운 명령으로 인식
             is_new = (cmd != last_cmd)
 
-            if is_new:
-                logger.info(f"📩 New Command: {cmd}")
+            if is_new and cmd:
+                logger.info(f"[Watcher] New command: {cmd!r}")
                 last_cmd = cmd
 
-                # 1. Stop / Abort
+                # 1. Stop / Abort / Emergency
                 if cmd in ("emergency_stop", "stop", "abort"):
-                    logger.warning("🛑 STOP/ABORT Triggered!")
+                    logger.warning(f"🛑 {cmd.upper()} command received!")
                     if not fault_event.is_set():
                         motion.move_stop(stop_mode=1)
                     abort_event.set()
-                    run_gate.set() 
-                    db_manager.update_robot_state(desired_state="None", is_working=False, current_task="idle")
+                    run_gate.set()  # Abort 처리를 위해 게이트 열어줌
 
                 # 2. Home
                 elif cmd == "home":
-                    logger.info("🏠 HOME Triggered!")
+                    logger.info("🏠 HOME command received!")
                     if not fault_event.is_set():
                         motion.move_stop(stop_mode=1)
                     abort_event.set()
-                    home_event.set() 
+                    home_event.set()
                     run_gate.set()
 
-                # 3. Pause (조건문 제거 -> 강제 실행)
+                # 3. Pause
                 elif cmd == "pause":
-                    # 에러나 홈 복귀 중이 아니라면 무조건 멈춤 시도
                     if not (abort_event.is_set() or fault_event.is_set() or home_event.is_set()):
-                        logger.info("⏸️ Executing PAUSE Logic (Forced)")
-                        
-                        # [중요] 상태 체크 없이 무조건 닫는다.
-                        run_gate.clear() 
-                        
-                        # DB 업데이트
-                        db_manager.update_robot_state(is_working=False, current_task="paused")
-
-                        # [중요] 하드웨어 멈춤 명령 전송 (이미 멈춰있어도 또 보냄 - 안전 제일)
+                        logger.info("⏸️ PAUSE command received!")
+                        # 로봇 모션 일시정지 서비스 호출
                         motion.move_pause()
+                        # 게이트 닫기 → checkpoint()에서 대기하게 됨
+                        run_gate.clear()
 
                 # 4. Resume
-                elif cmd == "resume" or cmd == "working":
+                elif cmd == "resume":
                     if not (abort_event.is_set() or fault_event.is_set() or home_event.is_set()):
-                        # Resume도 명시적으로 수행
-                        if motion.paused: 
+                        logger.info("▶️ RESUME command received!")
+                        if motion.paused:
                             motion.move_resume()
-                        
-                        logger.info("▶️ Resuming Task")
-                        run_gate.set() # 게이트 열기
-                        db_manager.update_robot_state(is_working=True, current_task="picking")
+                        if not run_gate.is_set():
+                            run_gate.set()
 
-            time.sleep(0.5) 
+                # 5. None/Working/기타 - 정상 상태 유지
+                elif cmd in ("none", "working", ""):
+                    # 일시정지 상태에서 DB가 초기화되면 자동 resume
+                    if motion.paused and not run_gate.is_set():
+                        logger.info("▶️ State cleared, auto-resuming...")
+                        motion.move_resume()
+                        run_gate.set()
+
+            time.sleep(0.2)
+
         except Exception as e:
-            logger.error(f"Watcher Error: {e}")
+            logger.error(f"❌ Watcher Error: {e}")
             time.sleep(1.0)
 
 # ==========================================
@@ -686,7 +699,7 @@ def perform_task(
     def checkpoint():
         if fault_event.is_set(): raise StopRequested("External Force/Fault Detected")
         if abort_event.is_set(): raise StopRequested("Abort Requested")
-        logger.info("Checking run_gate...")
+        # logger.info("Checking run_gate...")
         # Pause 상태면 여기서 대기
         if not run_gate.is_set():
             logger.info("⏸️ Task Paused. Waiting for Resume...")
