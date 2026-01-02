@@ -207,28 +207,42 @@ class MotionController:
         return fut.result() if fut.done() else None
 
     def move_pause(self) -> bool:
+        from dsr_msgs2.srv import MovePause
         res = self._call_wait(self.pause_cli, MovePause.Request())
         ok = bool(res is not None and getattr(res, "success", False))
         if ok:
             self._set_paused(True)
-            logger.info("⏸️ MovePause Success")
+            self.node.get_logger().info("✅ MovePause 성공")
+        else:
+            self.node.get_logger().error("❌ MovePause 실패/타임아웃")
         return ok
 
     def move_resume(self) -> bool:
+        from dsr_msgs2.srv import MoveResume
         res = self._call_wait(self.resume_cli, MoveResume.Request())
         ok = bool(res is not None and getattr(res, "success", False))
         if ok:
             self._set_paused(False)
-            logger.info("▶️ MoveResume Success")
+            self.node.get_logger().info("✅ MoveResume 성공")
+        else:
+            self.node.get_logger().error("❌ MoveResume 실패/타임아웃")
         return ok
 
     def move_stop(self, stop_mode: int = 1) -> bool:
+        from dsr_msgs2.srv import MoveStop
         req = MoveStop.Request()
-        req.stop_mode = int(stop_mode)
+        if hasattr(req, "stop_mode"):
+            req.stop_mode = int(stop_mode)
+        elif hasattr(req, "stop_type"):
+            req.stop_type = int(stop_mode)
+
         res = self._call_wait(self.stop_cli, req)
         ok = bool(res is not None and getattr(res, "success", False))
         if ok:
-            logger.warning("🛑 MoveStop Success")
+            self.node.get_logger().warn(f"🚨 MoveStop 성공 (mode={stop_mode})")
+        else:
+            # MoveStop은 실패해도 치명적이지 않으므로(이미 멈춰있을 수 있음) warn 처리
+            self.node.get_logger().warn("⚠️ MoveStop 실패/타임아웃 (이미 멈춰있거나 에러 상태일 수 있음)")
         return ok
 
 class RobotSystemController:
@@ -563,7 +577,7 @@ def place(isExisted,gripper, check_func=None):
     
 import numpy as np
 
-def stable_detect_with_bbox(img_node,yolo_model,target_class,frame_check=10,threshold=50):
+def stable_detect_with_bbox(img_node,yolo_model,target_class,frame_check=10,threshold=5):
     cx_list, cy_list = [], []
     x1_list, y1_list, x2_list, y2_list = [], [], [], []
     z_list = []
