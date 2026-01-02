@@ -484,20 +484,28 @@ def get_robot_pose_matrix(x, y, z, rx, ry, rz):
     return T
 
 # ---------- Pick & Place Helper ----------
-def select(x, y, z, gripper): 
+def select(x, y, z, gripper, check_func = None): 
     from DSR_ROBOT2 import movel, movesj, posx, posj, wait,get_current_posx,DR_MV_MOD_REL
     STOP_POINT1=posj([12.762, 6.61, 90.262, -0.04, 83.14, -79.958])#posx([400, 98.9, 150.801, 3.191, -179.976, -90.765])#
     STOP_POINT2=posj([-35.983, 8.636, 87.926, -0.051, 83.43, -125.702])#posx([350.865, -244.638, 150.453, 179.997, 179.978, 89.414])#
     STOP_POINT3=posj([-53.891, 29.944, 50.015, -0.164, 100.033, -143.681])#posx([340.637, -453.444, 206.405, 0.333, 179.319, -89.934])#
-
+    
+    if check_func: check_func()
     gripper.open_gripper()
+
+    if check_func: check_func()
+    
     current_pos = get_current_posx()[0]
     approach = posx([x, y-10, z+170, current_pos[3], current_pos[4], current_pos[5]])
     movel(approach,vel=VELOCITY,acc=ACC)
+    if check_func: check_func()
+
     gripper.close_gripper()
     wait(1)
+    if check_func: check_func()
     movel(posx([0, 0, 100, 0, 0, 0]),vel=VELOCITY, acc=ACC, mod=DR_MV_MOD_REL)
 
+    if check_func: check_func()
     # movesx([STOP_POINT1,
     #        STOP_POINT2,
     #        STOP_POINT3], 
@@ -507,7 +515,7 @@ def select(x, y, z, gripper):
            STOP_POINT3], 
            vel=VELOCITY, acc=ACC)    
 
-def place(isExisted,gripper):
+def place(isExisted,gripper, check_func=None):
     from DSR_ROBOT2 import (movel, movesj, posx, posj, wait, DR_MV_MOD_REL, DR_FC_MOD_ABS,
                             task_compliance_ctrl, set_stiffnessx, set_desired_force, 
                             get_tool_force, release_force, release_compliance_ctrl)
@@ -517,7 +525,7 @@ def place(isExisted,gripper):
     
     STOP_POINT1=posj([12.762, 6.61, 90.262, -0.04, 83.14, -79.958])#posx([400, 98.9, 150.801, 3.191, -179.976, -90.765])#
     STOP_POINT2=posj([-35.983, 8.636, 87.926, -0.051, 83.43, -125.702])#posx([350.865, -244.638, 150.453, 179.997, 179.978, 89.414])#
-
+    if check_func: check_func()
     if isExisted:
         print("place2")
         movel(PLACE2_UP,vel=VELOCITY,acc=ACC)
@@ -532,6 +540,7 @@ def place(isExisted,gripper):
 
     while True:
         force = get_tool_force()
+        if check_func: check_func()
         if force[2] > 25:
             release_force(time=0)
             gripper.open_gripper() 
@@ -540,7 +549,7 @@ def place(isExisted,gripper):
 
     release_compliance_ctrl()
     compliance_on = False
-    
+    if check_func: check_func()
     movel(posx([0, 0, 100, 0, 0, 0]),vel=VELOCITY, acc=ACC, mod=DR_MV_MOD_REL)
     movesj([STOP_POINT2,
            STOP_POINT1], 
@@ -667,7 +676,7 @@ def perform_task(
             logger.info("▶️ Task Resumed.")
 
     logger.info(f"🚀 Start Processing: {yolo_names}")
-    TABLE_UP=posj([60, 19.319, 49.142, 0.416, 107.438, 63.165])#posx([290.0, 409.975, 309.514, 60.864, 175.867, 70.147])
+    TABLE_UP=posj([60, 19.319, 49.142, 0.416, 107.438, 63.165]) #posx([290.0, 409.975, 309.514, 60.864, 175.867, 70.147])
     checkpoint()
     
     for item in yolo_names:
@@ -717,7 +726,7 @@ def perform_task(
             print("turn")
 
         print("grip start")
-        select(*robot_pos,gripper)
+        select(*robot_pos,gripper, check_func=checkpoint)
         print("pickup end")
         checkpoint() # Place 전 체크
 
@@ -753,7 +762,7 @@ def perform_task(
         else:
             logger.info(f"✅ Object not detected ({detected_count}/{valid_frame_count}) → assumed picked")
 
-        place(isExisted,gripper)
+        place(isExisted,gripper, check_func=checkpoint)
         print("place end")
         completed_items.append(item)
         checkpoint() # 루프 마지막 체크
@@ -777,10 +786,10 @@ def main(args=None):
     exec_thread.start()
     
     yolo_model = load_yolo_model(
-            "/home/rokey/Project/src/move_voice/move_voice/best_up.pt"
+            "/home/archer/ros2_ws/src/pre_project/pre_project/best.pt"
         )
     gripper2cam = np.load(
-            "/home/rokey/Project/src/move_voice/move_voice/T_gripper2camera.npy"
+            "/home/archer/ros2_ws/src/pre_project/pre_project/T_gripper2camera.npy"
         )
     gripper = RG(GRIPPER_NAME, TOOLCHARGER_IP, TOOLCHARGER_PORT)
     img_node = ImgNode()
